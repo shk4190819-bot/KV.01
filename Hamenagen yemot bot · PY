@@ -13,7 +13,7 @@ from flask import Flask
 # חשוב: אל תשאירו טוקן אמיתי בקוד! שימו אותו כמשתנה סביבה בפלטפורמה שבה
 # אתם מריצים את הבוט (Render/Railway/Heroku וכו') ולא בקובץ עצמו.
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN", "")
-EXTENSION_PATH = os.environ.get("EXTENSION_PATH", "ivr2:/5")
+EXTENSION_PATH = os.environ.get("EXTENSION_PATH", "ivr2:/4")
 
 # בסיס ה-API של וורדפרס - hamenagen.net
 WP_API_BASE = "https://hamenagen.net/wp-json/wp/v2"
