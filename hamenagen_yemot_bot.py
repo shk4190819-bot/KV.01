@@ -237,10 +237,12 @@ def download_audio(media_url, out_path_no_ext):
     cmd.append(media_url)
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180)
         mp3_path = f"{out_path_no_ext}.mp3"
         if os.path.exists(mp3_path):
             return mp3_path
+    except subprocess.TimeoutExpired:
+        print("[-] yt-dlp נתקע ולא הגיב תוך 180 שניות - בוטל.")
     except subprocess.CalledProcessError as e:
         print(f"[-] שגיאה בהורדת שמע: {e.stderr}")
     return None
