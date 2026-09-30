@@ -5,6 +5,7 @@ import time
 import threading
 import shutil
 import subprocess
+import wave
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask
@@ -22,7 +23,6 @@ CATEGORY_SLUG = "music-news"
 
 CHECK_INTERVAL = 60  # בודק כל דקה
 LAST_ID_FILE = "last_id_hamenagen.txt"
-FILE_COUNTER_FILE = "yemot_file_counter.txt"  # מספור רץ לקבצים בשלוחה, לשמירה על סדר ניגון
 MAX_ATTEMPTS = 3            # כמה פעמים לנסות פוסט שנכשל לפני שמוותרים
 DESCRIPTION_MAX_CHARS = 1500  # אורך מקסימלי של טקסט ההקראה
 
@@ -40,21 +40,95 @@ def home():
     return "Hamenagen -> Yemot Bot is running!"
 
 
-# --- 1. העלאת קובץ שמע (MP3) לימות המשיח ---
-def upload_audio_to_yemot(file_path, file_name):
+# --- 0. עזרים: המרה ל-WAV ומספור פנוי בשלוחה ---
+COOKIES_SECRET_FILE = "/etc/secrets/cookies.txt"   # Secret File ב-Render
+COOKIES_WORK_FILE = "yt_cookies.txt"
+
+
+def get_ffmpeg_exe():
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return shutil.which("ffmpeg") or "ffmpeg"
+
+
+def convert_to_wav(src_path, out_path):
+    """ממיר כל קובץ (שמע/וידאו) ל-WAV בפורמט שימות המשיח מנגנת:
+    מונו, 8000Hz, 16bit PCM. -vn מוריד את זרם הוידאו."""
+    try:
+        subprocess.run([get_ffmpeg_exe(), "-y", "-i", src_path, "-vn",
+                        "-ac", "1", "-ar", "8000", "-acodec", "pcm_s16le",
+                        out_path],
+                       check=True, capture_output=True)
+        return out_path
+    except Exception as e:
+        print(f"[-] שגיאה בהמרה ל-WAV: {e}")
+        return None
+
+
+def is_valid_yemot_wav(path):
+    """בודק שהקובץ הוא WAV בפורמט שימות מנגנת: PCM, מונו, 8000Hz, 16bit, ולא ריק."""
+    try:
+        with wave.open(path, "rb") as w:
+            return (w.getnchannels() == 1 and w.getframerate() == 8000
+                    and w.getsampwidth() == 2 and w.getnframes() > 0)
+    except Exception as e:
+        print(f"[-] הקובץ אינו WAV תקין: {e}")
+        return False
+
+
+def get_next_free_number():
+    """מחזיר את המספר הפנוי הבא בשלוחה (הגבוה ביותר מכל סוג קובץ + 1), באותו רוחב ספרות.
+    כולל שירים שהועלו ידנית. משמש לקובץ השמע; קובץ הטקסט מקבל את המספר שאחריו."""
+    try:
+        r = requests.get("https://www.call2all.co.il/ym/api/GetIVR2Dir",
+                         params={"token": YEMOT_TOKEN, "path": EXTENSION_PATH},
+                         timeout=20)
+        data = r.json()
+        best, width = -1, 3
+        for f in data.get("files", []):
+            m = re.match(r'^(\d+)\.', f.get("name", ""))
+            if m:
+                n = int(m.group(1))
+                if n > best:
+                    best, width = n, len(m.group(1))
+        if best < 0:
+            return "000"  # שלוחה ריקה - מתחילים מ-000
+        return str(best + 1).zfill(width)
+    except Exception as e:
+        print(f"[-] שגיאה בקריאת רשימת הקבצים בשלוחה: {e}")
+        return None
+
+
+# --- 1. העלאת קובץ שמע (WAV) לימות המשיח ---
+def upload_audio_to_yemot(file_path, file_name=None):
+    """מעלה WAV בלבד. בלי file_name - שולחים רק את השלוחה וימות נותנת שם אוטומטי (הבא בתור)."""
+    if not file_path.lower().endswith(".wav"):
+        print(f"[-] חסום: שמע מועלה רק כ-WAV ({file_path})")
+        return False
     url = "https://www.call2all.co.il/ym/api/UploadFile"
-    full_path = f"{EXTENSION_PATH}/{file_name}"
+    full_path = f"{EXTENSION_PATH}/{file_name}" if file_name else f"{EXTENSION_PATH}/"
     params = {"token": YEMOT_TOKEN, "path": full_path}
     try:
         with open(file_path, 'rb') as f:
-            response = requests.post(url, data=params, files={'file': f})
+            response = requests.post(url, data=params, files={'file': f}, timeout=120)
         print(f"[+] תשובת שרת ימות (העלאת שמע): {response.text}")
+        try:
+            return response.json().get("responseStatus", "OK") == "OK"
+        except Exception:
+            return response.ok
     except Exception as e:
         print(f"[-] שגיאה בהעלאת שמע: {e}")
+        return False
 
 
 # --- 2. העלאת טקסט (TTS) לימות המשיח - לצורך הקראת פרטי השיר ---
 def upload_text_to_yemot(text_content, file_name):
+    # טקסט עולה אך ורק כ-TTS
+    if not file_name.lower().endswith(".tts"):
+        print(f"[-] חסום: טקסט מועלה רק כ-TTS ({file_name})")
+        return False
     url = "https://www.call2all.co.il/ym/api/UploadTextFile"
     full_path = f"{EXTENSION_PATH}/{file_name}"
     params = {
@@ -63,10 +137,15 @@ def upload_text_to_yemot(text_content, file_name):
         "contents": text_content
     }
     try:
-        response = requests.post(url, data=params)
+        response = requests.post(url, data=params, timeout=30)
         print(f"[+] תשובת שרת ימות (העלאת טקסט): {response.text}")
+        try:
+            return response.json().get("responseStatus", "OK") == "OK"
+        except Exception:
+            return response.ok
     except Exception as e:
         print(f"[-] שגיאה בהעלאת טקסט: {e}")
+        return False
 
 
 # --- 2.5 מציאת מזהה קטגוריה לפי slug (פעם אחת, בהפעלה) ---
@@ -115,11 +194,7 @@ def find_media_url(html_content):
     return None
 
 
-# --- 4. הורדת שמע בלבד בעזרת yt-dlp (יוטיוב או קישור ישיר) ---
-COOKIES_SECRET_FILE = "/etc/secrets/cookies.txt"   # Secret File ב-Render
-COOKIES_WORK_FILE = "yt_cookies.txt"
-
-
+# --- 4. הורדת שמע בעזרת yt-dlp (יוטיוב או קישור ישיר) ---
 def prepare_cookies_file():
     """יוטיוב חוסם שרתי ענן ("Sign in to confirm you're not a bot").
     קובץ cookies של חשבון מחובר עוזר לעקוף את זה.
@@ -143,37 +218,9 @@ def is_youtube_url(url):
     return "youtube.com" in url or "youtu.be" in url
 
 
-def get_ffmpeg_exe():
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        return shutil.which("ffmpeg") or "ffmpeg"
-
-
-def ensure_phone_audio(mp3_path):
-    """מערכת ימות המשיח תומכת רק ב-MP3 תקין (שמע בלבד, לא וידאו).
-    ממיר מחדש בכוח כדי להבטיח פלט שמע נקי, מונו, בקצב דגימה נמוך שמתאים לטלפון -
-    זה גם מסיר כל שריד וידאו אם בטעות הגיע קובץ מעורב."""
-    fixed_path = mp3_path.replace(".mp3", "_fixed.mp3")
-    try:
-        subprocess.run(
-            [get_ffmpeg_exe(), "-y", "-i", mp3_path, "-vn",
-             "-ac", "1", "-ar", "8000", "-acodec", "libmp3lame", "-b:a", "32k",
-             fixed_path],
-            check=True, capture_output=True, text=True,
-        )
-        os.replace(fixed_path, mp3_path)
-        return mp3_path
-    except subprocess.CalledProcessError as e:
-        print(f"[-] שגיאה בהמרה הסופית לשמע: {e.stderr}")
-    except Exception as e:
-        print(f"[-] שגיאה בהמרה הסופית לשמע: {e}")
-    return None
-
-
 def download_direct(url, out_path_no_ext):
-    """הורדת קובץ שמע/וידאו ישיר מהאתר (בלי יוטיוב), והמרה ל-MP3 במידת הצורך."""
+    """הורדת קובץ שמע/וידאו ישיר מהאתר (בלי יוטיוב), והמרה ל-MP3 במידת הצורך.
+    (ההמרה הסופית ל-WAV נעשית אחר כך ב-process_and_upload)"""
     ext = os.path.splitext(url.split("?")[0])[1].lower() or ".bin"
     raw_path = f"{out_path_no_ext}_raw{ext}"
     mp3_path = f"{out_path_no_ext}.mp3"
@@ -190,11 +237,9 @@ def download_direct(url, out_path_no_ext):
         else:
             subprocess.run([get_ffmpeg_exe(), "-y", "-i", raw_path, "-vn",
                             "-acodec", "libmp3lame", "-q:a", "2", mp3_path],
-                           check=True, capture_output=True, text=True)
+                           check=True, capture_output=True)
             os.remove(raw_path)
         return mp3_path
-    except subprocess.CalledProcessError as e:
-        print(f"[-] שגיאה בהמרה לשמע: {e.stderr}")
     except Exception as e:
         print(f"[-] שגיאה בהורדת קובץ ישיר: {e}")
         for path in (raw_path,):
@@ -356,25 +401,52 @@ def clean_html_text(html):
     return "\n".join(ln for ln in lines if ln)
 
 
+# --- ניקוי טקסט להקראה (TTS) ---
+REMOVE_CREDITS = False  # False = הקרדיטים (מילים, לחן, צילום וכו') נשארים בהקראה
+
+# שורות שהן זבל של האתר (נמחקות אם השורה כולה זהה להן)
+JUNK_LINES = {
+    "פרסומת", "דילוג על הפרסומת", "יחצ", "יח\"צ", "גרסת שמע", "גרסת שמע:",
+    "הגב", "שתף", "קרא עוד", "קראו עוד", "כתבות נוספות בנושא", "לצפייה בקליפ",
+    "לצפיה בקליפ", "לשמיעה", "להאזנה",
+}
+# שורות שמתחילות באחד מאלה נמחקות
+JUNK_PREFIXES = ["גרסת שמע", "כתבות נוספות"]
+if REMOVE_CREDITS:
+    JUNK_PREFIXES += ["קרדיטים", "קרדיט", "צילום:", "יחסי ציבור", "יחצ"]
+
+URL_RE = re.compile(r'https?://\S+|www\.\S+', re.I)
+SYMBOLS_RE = re.compile(r'[|•·*_#~^<>\[\]{}\\/=+@]|[\U0001F000-\U0001FFFF\u2600-\u27BF]')
+
+
+def clean_tts_text(text):
+    """מנקה טקסט כך שיהיה ראוי להקראה: בלי קישורים, סמלים, אימוג'י ושורות זבל של האתר."""
+    out = []
+    for line in text.splitlines():
+        line = URL_RE.sub("", line)
+        line = line.replace("|", ",")  # מפריד קרדיטים -> הפסקה קלה בהקראה
+        line = SYMBOLS_RE.sub(" ", line)
+        line = re.sub(r'\s+', ' ', line).strip()
+        if not line:
+            continue
+        bare = line.strip(" :.-–—")
+        if bare in JUNK_LINES or line in JUNK_LINES:
+            continue
+        if any(line.startswith(pref) for pref in JUNK_PREFIXES):
+            continue
+        # שורה שנשארה בלי אותיות (רק סימנים/מספרים) - אין מה להקריא
+        if not re.search(r'[A-Za-z\u0590-\u05FF]', line):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def build_song_description(title, content_html, excerpt_html=""):
     # תוכן הפוסט באתר הוא טקסט התיאור/קרדיטים/מילות השיר
-    body = clean_html_text(content_html) or clean_html_text(excerpt_html)
+    body = clean_tts_text(clean_html_text(content_html) or clean_html_text(excerpt_html))
+    title = clean_tts_text(title)
     text = title if not body else f"{title}\n{body}"
     return text[:DESCRIPTION_MAX_CHARS]
-
-
-# --- מספור רץ לקבצים בשלוחה (כדי לשמור על סדר ניגון נכון בימות המשיח) ---
-def get_next_file_number():
-    n = 1
-    if os.path.exists(FILE_COUNTER_FILE):
-        try:
-            with open(FILE_COUNTER_FILE, "r") as f:
-                n = int(f.read().strip())
-        except Exception:
-            n = 1
-    with open(FILE_COUNTER_FILE, "w") as f:
-        f.write(str(n + 1))
-    return n
 
 
 def process_and_upload(post):
@@ -405,22 +477,37 @@ def process_and_upload(post):
         print(f"[-] נכשל בהורדת השמע עבור פוסט {post_id} מכל המקורות.")
         return False  # אין טעם להעלות פרטים בלי שיר בפועל
 
-    # ודאות שהקובץ הוא שמע-בלבד (MP3 תקין) - ימות המשיח לא תומכת בוידאו
-    mp3_path = ensure_phone_audio(mp3_path)
-    if not mp3_path:
-        print(f"[-] נכשלה המרת השמע הסופית לפוסט {post_id}.")
+    # המרה ל-WAV שימות המשיח מנגנת (מונו, 8kHz, בלי וידאו)
+    wav_path = convert_to_wav(mp3_path, f"{temp_base}.wav")
+    if os.path.exists(mp3_path):
+        os.remove(mp3_path)
+    if not wav_path:
         return False
 
-    # מספר רץ (1, 2, 3...) כדי שהשלוחה תשמור על סדר ניגון נכון
-    file_number = get_next_file_number()
+    # מעלים רק אם הקובץ בפורמט המתאים לימות המשיח
+    if not is_valid_yemot_wav(wav_path):
+        print(f"[-] הפורמט לא מתאים, לא מעלה את פוסט {post_id}.")
+        os.remove(wav_path)
+        return False
 
-    upload_audio_to_yemot(mp3_path, f"{file_number}.mp3")
-    os.remove(mp3_path)
+    # ימות לא מקבלת נתיב בלי שם קובץ ("path is invalid"), ולכן בודקים בשלוחה
+    # מה המספר הפנוי הבא (כולל שירים שהועלו ידנית) ומעלים עם המספר הזה
+    audio_number = get_next_free_number()
+    if audio_number is None:
+        os.remove(wav_path)
+        return False
 
-    # 2. העלאת פרטי השיר (שם + תיאור/מילים) כטקסט להקראה (TTS)
+    ok = upload_audio_to_yemot(wav_path, f"{audio_number}.wav")
+    os.remove(wav_path)
+    if not ok:
+        return False
+
+    # קובץ הטקסט (TTS) הוא קובץ נפרד - המספר שאחרי קובץ השמע
+    number = str(int(audio_number) + 1).zfill(len(audio_number))
+
     description = build_song_description(
         title, post['content']['rendered'], post.get('excerpt', {}).get('rendered', ''))
-    upload_text_to_yemot(description, f"{file_number}_details.tts")
+    upload_text_to_yemot(description, f"{number}.tts")
     return True
 
 
