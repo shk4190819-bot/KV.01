@@ -24,7 +24,7 @@ CATEGORY_SLUG = "music-news"
 CHECK_INTERVAL = 60  # בודק כל דקה
 LAST_ID_FILE = "last_id_hamenagen.txt"
 MAX_ATTEMPTS = 3            # כמה פעמים לנסות פוסט שנכשל לפני שמוותרים
-DESCRIPTION_MAX_CHARS = 1500  # אורך מקסימלי של טקסט ההקראה
+DESCRIPTION_MAX_CHARS = 1529  # אורך מקסימלי של טקסט ההקראה
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -446,6 +446,7 @@ def build_song_description(title, content_html, excerpt_html=""):
     body = clean_tts_text(clean_html_text(content_html) or clean_html_text(excerpt_html))
     title = clean_tts_text(title)
     text = title if not body else f"{title}\n{body}"
+    text = f"מיוזיק קליק בקו התוכן הישראלי\n{text}"
     return text[:DESCRIPTION_MAX_CHARS]
 
 
