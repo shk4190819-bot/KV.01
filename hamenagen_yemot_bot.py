@@ -14,7 +14,7 @@ from flask import Flask
 # חשוב: אל תשאירו טוקן אמיתי בקוד! שימו אותו כמשתנה סביבה בפלטפורמה שבה
 # אתם מריצים את הבוט (Render/Railway/Heroku וכו') ולא בקובץ עצמו.
 YEMOT_TOKEN = os.environ.get("YEMOT_TOKEN", "")
-EXTENSION_PATH = os.environ.get("EXTENSION_PATH", "ivr2:/4")
+EXTENSION_PATH = os.environ.get("EXTENSION_PATH", "ivr2:/300")
 
 # בסיס ה-API של וורדפרס - hamenagen.net
 WP_API_BASE = "https://hamenagen.net/wp-json/wp/v2"
@@ -446,7 +446,7 @@ def build_song_description(title, content_html, excerpt_html=""):
     body = clean_tts_text(clean_html_text(content_html) or clean_html_text(excerpt_html))
     title = clean_tts_text(title)
     text = title if not body else f"{title}\n{body}"
-    text = f"מיוזיק קליק בקו התוכן הישראלי\n{text}"
+    text = f"מיוזיקליק בקו התוכן הישראלי\n{text}"
     return text[:DESCRIPTION_MAX_CHARS]
 
 
