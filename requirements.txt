@@ -3,3 +3,5 @@ requests
 beautifulsoup4
 yt-dlp[default]
 imageio-ffmpeg
+edge-tts
+gTTS
