@@ -75,8 +75,14 @@ def home():
     return "Hamenagen -> Yemot Bot is running!"
 
 
-COOKIES_SECRET_FILE = "/etc/secrets/cookies.txt"  # Secret File ב-Render
-COOKIES_WORK_FILE = "yt_cookies.txt"
+# קובצי cookies של יוטיוב - עד שני חשבונות. הבוט מתחלף ביניהם, ואם אחד נכשל מנסה את השני.
+# Secret Files ב-Render: cookies.txt (חשבון 1) ו-cookies2.txt (חשבון 2).
+# או משתני סביבה: YOUTUBE_COOKIES ו-YOUTUBE_COOKIES_2 (התוכן המלא של הקובץ).
+COOKIES_SOURCES = [
+    ("/etc/secrets/cookies.txt", "YOUTUBE_COOKIES", "yt_cookies_1.txt"),
+    ("/etc/secrets/cookies2.txt", "YOUTUBE_COOKIES_2", "yt_cookies_2.txt"),
+]
+_cookie_rr = [0]   # מונה להחלפה בין החשבונות
 
 
 # ================= יעדים =================
@@ -571,27 +577,41 @@ def find_page_audio(post):
 
 
 # --- yt-dlp ---
-def prepare_cookies_file():
-    """יוטיוב חוסם שרתי ענן. קובץ cookies של חשבון מחובר עוזר לעקוף את זה."""
-    try:
-        if os.path.exists(COOKIES_SECRET_FILE):
-            shutil.copyfile(COOKIES_SECRET_FILE, COOKIES_WORK_FILE)
-            return COOKIES_WORK_FILE
-        env_cookies = os.environ.get("YOUTUBE_COOKIES", "")
-        if env_cookies.strip():
-            with open(COOKIES_WORK_FILE, "w", encoding="utf-8") as f:
-                f.write(env_cookies)
-            return COOKIES_WORK_FILE
-    except Exception as e:
-        print(f"[-] שגיאה בהכנת קובץ cookies: {e}")
-    return None
+def get_cookie_files():
+    """רשימת קובצי cookies זמינים (עד שניים). yt-dlp מעדכן את הקובץ, לכן עובדים על עותק."""
+    out = []
+    for secret_path, env_name, work_path in COOKIES_SOURCES:
+        try:
+            if os.path.exists(secret_path):
+                shutil.copyfile(secret_path, work_path)
+                out.append(work_path)
+                continue
+            env_cookies = os.environ.get(env_name, "")
+            if env_cookies.strip():
+                with open(work_path, "w", encoding="utf-8") as f:
+                    f.write(env_cookies)
+                out.append(work_path)
+        except Exception as e:
+            print(f"[-] שגיאה בהכנת קובץ cookies ({work_path}): {e}")
+    return out
+
+
+def cookie_order():
+    """סדר ניסיון: מתחלפים בין החשבונות בכל הורדה, והשני משמש גיבוי."""
+    files = get_cookie_files()
+    if not files:
+        print("[!] לא הוגדרו cookies של יוטיוב - ייתכן שההורדה תיחסם.")
+        return [None]
+    k = _cookie_rr[0] % len(files)
+    _cookie_rr[0] += 1
+    return files[k:] + files[:k]
 
 
 def is_youtube_url(url):
     return "youtube.com" in url or "youtu.be" in url
 
 
-def yt_dlp_base_cmd():
+def yt_dlp_base_cmd(cookies=None):
     cmd = ["yt-dlp"]
     try:
         import imageio_ffmpeg
@@ -600,31 +620,29 @@ def yt_dlp_base_cmd():
         pass
     if shutil.which("node"):
         cmd += ["--js-runtimes", "node"]
-    cookies = prepare_cookies_file()
     if cookies:
         cmd += ["--cookies", cookies]
-    else:
-        print("[!] לא הוגדרו cookies של יוטיוב - ייתכן שההורדה תיחסם.")
     return cmd
 
 
 def expand_youtube_playlist(list_id):
     """פלייליסט ביוטיוב שמוטמע בפוסט -> רשימת שירים [{url, title}] לפי הסדר."""
-    cmd = yt_dlp_base_cmd() + ["--flat-playlist", "--dump-single-json",
-                               f"https://www.youtube.com/playlist?list={list_id}"]
-    try:
-        out = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180).stdout
-        data = json.loads(out)
-        tracks = []
-        for e in data.get("entries") or []:
-            vid = e.get("id")
-            if vid:
-                tracks.append({"url": youtube_url(vid), "title": e.get("title")})
-        print(f"[+] נמצא פלייליסט ביוטיוב ({list_id}) עם {len(tracks)} שירים")
-        return tracks
-    except Exception as e:
-        print(f"[-] שגיאה בפתיחת פלייליסט {list_id}: {e}")
-        return []
+    for cookies in cookie_order():
+        cmd = yt_dlp_base_cmd(cookies) + ["--flat-playlist", "--dump-single-json",
+                                          f"https://www.youtube.com/playlist?list={list_id}"]
+        try:
+            out = subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=180).stdout
+            data = json.loads(out)
+            tracks = []
+            for e in data.get("entries") or []:
+                vid = e.get("id")
+                if vid:
+                    tracks.append({"url": youtube_url(vid), "title": e.get("title")})
+            print(f"[+] נמצא פלייליסט ביוטיוב ({list_id}) עם {len(tracks)} שירים")
+            return tracks
+        except Exception as e:
+            print(f"[-] שגיאה בפתיחת פלייליסט {list_id} (cookies: {cookies}): {e}")
+    return []
 
 
 def download_direct(url, out_path_no_ext):
@@ -659,17 +677,18 @@ def download_audio(media_url, out_path_no_ext):
         return None
     if not is_youtube_url(media_url):
         return download_direct(media_url, out_path_no_ext)
-    cmd = yt_dlp_base_cmd() + ["-x", "--audio-format", "mp3", "--no-playlist",
-                               "-o", f"{out_path_no_ext}.%(ext)s", media_url]
-    try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
-        mp3_path = f"{out_path_no_ext}.mp3"
-        if os.path.exists(mp3_path):
-            return mp3_path
-    except subprocess.TimeoutExpired:
-        print(f"[-] yt-dlp לא הסתיים תוך {DOWNLOAD_TIMEOUT} שניות - בוטל.")
-    except subprocess.CalledProcessError as e:
-        print(f"[-] שגיאה בהורדת שמע: {e.stderr}")
+    for cookies in cookie_order():
+        cmd = yt_dlp_base_cmd(cookies) + ["-x", "--audio-format", "mp3", "--no-playlist",
+                                          "-o", f"{out_path_no_ext}.%(ext)s", media_url]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+            mp3_path = f"{out_path_no_ext}.mp3"
+            if os.path.exists(mp3_path):
+                return mp3_path
+        except subprocess.TimeoutExpired:
+            print(f"[-] yt-dlp לא הסתיים תוך {DOWNLOAD_TIMEOUT} שניות - בוטל (cookies: {cookies}).")
+        except subprocess.CalledProcessError as e:
+            print(f"[-] שגיאה בהורדת שמע (cookies: {cookies}): {e.stderr}")
     return None
 
 
