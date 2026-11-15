@@ -59,6 +59,17 @@ TTS_ENGINE = os.environ.get("TTS_ENGINE", "edge").lower()
 TTS_VOICE = os.environ.get("TTS_VOICE", "he-IL-AvriNeural")
 TTS_RATE = os.environ.get("TTS_RATE", "+0%")   # מהירות דיבור, למשל "-10%" לאיטי יותר
 
+# --- יוטיוב ---
+# מחולל PO Token (bgutil). נבנה בזמן ה-build ב-Render לתיקייה bgutil לצד הקובץ הזה.
+# אם הקובץ לא קיים - הבוט פשוט ממשיך בלי זה.
+BGUTIL_SCRIPT = os.environ.get(
+    "BGUTIL_SCRIPT",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "bgutil", "server", "build", "generate_once.js"))
+# 1 = קודם מנסים להוריד בלי cookies (עם PO Token), ורק אם זה נכשל משתמשים ב-cookies.
+# כך החשבונות נחשפים פחות ופחות נחסמים. 0 = ישר עם cookies כמו קודם.
+YT_TRY_NO_COOKIES = os.environ.get("YT_TRY_NO_COOKIES", "1") == "1"
+
 SKIP = 10 ** 6  # סימון "לא להעלות את הפוסט הזה ליעד הזה"
 
 HEADERS = {
@@ -597,14 +608,20 @@ def get_cookie_files():
 
 
 def cookie_order():
-    """סדר ניסיון: מתחלפים בין החשבונות בכל הורדה, והשני משמש גיבוי."""
+    """סדר ניסיון: קודם בלי cookies (אם YT_TRY_NO_COOKIES=1), ואחר כך מתחלפים בין החשבונות
+    בכל הורדה, כשהשני משמש גיבוי."""
     files = get_cookie_files()
-    if not files:
+    order = []
+    if YT_TRY_NO_COOKIES:
+        order.append(None)
+    if files:
+        k = _cookie_rr[0] % len(files)
+        _cookie_rr[0] += 1
+        order += files[k:] + files[:k]
+    if not order:
         print("[!] לא הוגדרו cookies של יוטיוב - ייתכן שההורדה תיחסם.")
         return [None]
-    k = _cookie_rr[0] % len(files)
-    _cookie_rr[0] += 1
-    return files[k:] + files[:k]
+    return order
 
 
 def is_youtube_url(url):
@@ -620,6 +637,8 @@ def yt_dlp_base_cmd(cookies=None):
         pass
     if shutil.which("node"):
         cmd += ["--js-runtimes", "node"]
+    if os.path.exists(BGUTIL_SCRIPT):
+        cmd += ["--extractor-args", f"youtube:getpot_bgutil_script={BGUTIL_SCRIPT}"]
     if cookies:
         cmd += ["--cookies", cookies]
     return cmd
@@ -932,6 +951,7 @@ def process_post(post, pending, state):
 def run_bot():
     print("--- הבוט הופעל ברקע (מול hamenagen.net) ---")
     print(f"[+] יעדים: {[(t['name'], t['path']) for t in TARGETS]}")
+    print(f"[+] מחולל PO Token (bgutil): {'נמצא' if os.path.exists(BGUTIL_SCRIPT) else 'לא נמצא'}")
     category_ids = []
     for slug in CATEGORY_SLUGS:
         cid = get_category_id(slug)
