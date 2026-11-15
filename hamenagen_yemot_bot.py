@@ -62,10 +62,14 @@ TTS_RATE = os.environ.get("TTS_RATE", "+0%")   # מהירות דיבור, למש
 # --- יוטיוב ---
 # מחולל PO Token (bgutil). נבנה בזמן ה-build ב-Render לתיקייה bgutil לצד הקובץ הזה.
 # אם הקובץ לא קיים - הבוט פשוט ממשיך בלי זה.
-BGUTIL_SCRIPT = os.environ.get(
-    "BGUTIL_SCRIPT",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                 "bgutil", "server", "build", "generate_once.js"))
+BGUTIL_SERVER_HOME = os.environ.get(
+    "BGUTIL_SERVER_HOME",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "bgutil", "server"))
+
+
+def bgutil_ready():
+    """True אם המחולל נבנה (קיימת תיקיית build בתוך bgutil/server)."""
+    return os.path.isdir(os.path.join(BGUTIL_SERVER_HOME, "build"))
 # 1 = קודם מנסים להוריד בלי cookies (עם PO Token), ורק אם זה נכשל משתמשים ב-cookies.
 # כך החשבונות נחשפים פחות ופחות נחסמים. 0 = ישר עם cookies כמו קודם.
 YT_TRY_NO_COOKIES = os.environ.get("YT_TRY_NO_COOKIES", "1") == "1"
@@ -637,8 +641,8 @@ def yt_dlp_base_cmd(cookies=None):
         pass
     if shutil.which("node"):
         cmd += ["--js-runtimes", "node"]
-    if os.path.exists(BGUTIL_SCRIPT):
-        cmd += ["--extractor-args", f"youtube:getpot_bgutil_script={BGUTIL_SCRIPT}"]
+    if bgutil_ready():
+        cmd += ["--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER_HOME}"]
     if cookies:
         cmd += ["--cookies", cookies]
     return cmd
@@ -951,7 +955,7 @@ def process_post(post, pending, state):
 def run_bot():
     print("--- הבוט הופעל ברקע (מול hamenagen.net) ---")
     print(f"[+] יעדים: {[(t['name'], t['path']) for t in TARGETS]}")
-    print(f"[+] מחולל PO Token (bgutil): {'נמצא' if os.path.exists(BGUTIL_SCRIPT) else 'לא נמצא'}")
+    print(f"[+] מחולל PO Token (bgutil): {'נמצא' if bgutil_ready() else 'לא נמצא'}")
     category_ids = []
     for slug in CATEGORY_SLUGS:
         cid = get_category_id(slug)
