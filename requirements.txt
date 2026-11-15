@@ -1,7 +1,8 @@
 flask
 requests
 beautifulsoup4
-yt-dlp[default]
+yt-dlp
+bgutil-ytdlp-pot-provider==0.6.1
 imageio-ffmpeg
 edge-tts
 gTTS
